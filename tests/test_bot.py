@@ -8,6 +8,7 @@ import urllib.error
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import date
 from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +23,14 @@ def raw_config():
     raw = json.loads((ROOT / "config.example.json").read_text(encoding="utf-8"))
     raw["example"] = False
     return raw
+
+
+def raw_prices():
+    return json.loads((ROOT / "subscription-prices.json").read_text(encoding="utf-8"))
+
+
+def validated_config(raw):
+    return bot.validate_config(raw, bot.validate_prices(raw_prices()))
 
 
 def rates(day):
@@ -39,32 +48,53 @@ class FakeTelegram:
 
 class CalculationsTests(unittest.TestCase):
     def setUp(self):
-        self.config = bot.validate_config(raw_config())
+        self.config = validated_config(raw_config())
 
     def test_individual_music_and_icloud_shares(self):
         text = bot.render(self.config, DAY, rates(DAY), plain=True)
-        self.assertIn("126.00 ₴ or 12.00 zł", text)
-        self.assertIn("84.00 ₴ or 8.00 zł", text)
-        self.assertIn("105.00 ₴ or 10.00 zł", text)
-        self.assertIn("Max · Music\nMusic $2.00 = $2.00", text)
-        self.assertNotIn("iCloud $0.00", text)
+        self.assertEqual(text.count("☁️ + 🎵 — 161 грн / 15 zł"), 1)
+        self.assertIn("🎵 Music — 56 грн / 5 zł", text)
+        self.assertNotIn("Max", text)
+        self.assertNotIn("$", text)
 
     def test_cross_rate_is_not_rounded_before_conversion(self):
-        rate = Decimal("43.1234"), Decimal("10.3541")
-        expected = bot.rounded(Decimal("3") * rate[0] / rate[1])
+        rate = Decimal("3.375"), Decimal("1")
         text = bot.render(self.config, DAY, rate, plain=True)
-        self.assertIn(expected + " zł", text)
-        self.assertEqual(bot.rounded(Decimal("1.005")), "1.01")
+        self.assertIn("🎵 Music — 5 грн / 5 zł", text)
+        self.assertEqual(bot.rounded(Fraction("1.49")), "1")
+        self.assertEqual(bot.rounded(Fraction("1.50")), "2")
+        self.assertEqual(bot.rounded(Fraction("1.99")), "2")
 
-    def test_html_in_names_and_note_is_escaped(self):
+    def test_names_are_not_shown_and_note_is_escaped(self):
         raw = raw_config()
         raw["participants"][0]["name"] = "Anna <b>& Olya"
         raw["participants"][0]["telegram_id"] = 1234
         raw["payment_note"] = "<script>"
-        text = bot.render(bot.validate_config(raw), DAY, rates(DAY))
-        self.assertIn("Anna &lt;b&gt;&amp; Olya", text)
-        self.assertIn('tg://user?id=1234', text)
+        text = bot.render(validated_config(raw), DAY, rates(DAY))
+        self.assertNotIn("Anna", text)
+        self.assertNotIn("tg://user?id=1234", text)
+        self.assertIn("&lt;script&gt;", text)
         self.assertNotIn("<script>", text)
+
+    def test_identical_prices_are_grouped_and_icloud_only_is_shown(self):
+        raw = raw_config()
+        raw["participants"][1].update(music_usd="2.00", icloud_usd="1.00")
+        raw["participants"][2].update(music_usd="0.00", icloud_usd="1.00")
+        text = bot.render(validated_config(raw), DAY, rates(DAY), plain=True)
+        self.assertEqual(text.count("☁️ + 🎵 — 161 грн / 15 zł"), 1)
+        self.assertIn("☁️ iCloud — 105 грн / 10 zł", text)
+
+    def test_subscription_prices_and_user_counts_are_validated(self):
+        for service, key, value in [("music", "total_usd", "0.00"),
+                                    ("icloud", "users", 0), ("music", "users", True)]:
+            raw = raw_prices()
+            raw[service][key] = value
+            with self.subTest(service=service, key=key), self.assertRaises(bot.BotError):
+                bot.validate_prices(raw)
+        raw = raw_prices()
+        raw["icloud"]["users"] = 1
+        with self.assertRaises(bot.BotError):
+            bot.validate_config(raw_config(), bot.validate_prices(raw))
 
     def test_invalid_shares_are_rejected(self):
         for value in ["NaN", "sNaN", "Infinity", "-1", "1.005", 2.5, None, "10001"]:
@@ -75,37 +105,36 @@ class CalculationsTests(unittest.TestCase):
         for key, value in [("example", "false"), ("timezone", "No/SuchZone"),
                            ("participants", []), ("participants", [None]), ("payment_note", None)]:
             with self.subTest(key=key), self.assertRaises(bot.BotError):
-                bot.validate_config(dict(raw_config(), **{key: value}))
+                validated_config(dict(raw_config(), **{key: value}))
         raw = raw_config()
         raw["participants"][1]["id"] = "anna"
         with self.assertRaises(bot.BotError):
-            bot.validate_config(raw)
+            validated_config(raw)
 
     def test_empty_share_and_duplicate_telegram_ids_are_rejected(self):
         raw = raw_config()
         raw["participants"][0].update(music_usd="0.00", icloud_usd="0.00")
         with self.assertRaises(bot.BotError):
-            bot.validate_config(raw)
+            validated_config(raw)
         raw = raw_config()
         raw["participants"][0]["telegram_id"] = 123
         raw["participants"][1]["telegram_id"] = 123
         with self.assertRaises(bot.BotError):
-            bot.validate_config(raw)
+            validated_config(raw)
 
     def test_maximum_message_fits_telegram_limit_with_emoji(self):
         raw = raw_config()
         template = copy.deepcopy(raw["participants"][0])
         raw["participants"] = [dict(template, id=f"person_{n}", name="😀" * 60,
-                                    music_usd="10000.00", icloud_usd="10000.00") for n in range(6)]
+                                    music_usd="10000.00", icloud_usd="0.00") for n in range(6)]
         raw["payment_note"] = "😀" * 400
-        text = bot.render(bot.validate_config(raw), DAY, rates(DAY), plain=True)
+        text = bot.render(validated_config(raw), DAY, rates(DAY), plain=True)
         self.assertLess(len(text.encode("utf-16-le")) // 2, 4096)
 
     def test_demo_explicitly_labels_fake_rates(self):
         text = bot.render(self.config, DAY, rates(DAY), demo=True)
         self.assertIn("DO NOT PAY", text)
-        self.assertIn("Example participants", text)
-        self.assertIn("Example rate", text)
+        self.assertIn("Example amounts and rates.", text)
 
 
 class RatesTests(unittest.TestCase):
@@ -146,7 +175,7 @@ class RatesTests(unittest.TestCase):
 
 class DeliveryTests(unittest.TestCase):
     def setUp(self):
-        self.config = bot.validate_config(raw_config())
+        self.config = validated_config(raw_config())
         self.api = FakeTelegram()
 
     def test_sends_one_message_without_payment_buttons(self):
@@ -168,8 +197,8 @@ class DeliveryTests(unittest.TestCase):
         tomorrow = date(2026, 10, 29)
         bot.send_notification(self.config, self.api, -500, enabled=True, rates_provider=provider, today=tomorrow)
         self.assertEqual(days, [DAY, tomorrow])
-        self.assertIn("126.00", self.api.calls[0][1]["text"])
-        self.assertIn("132.00", self.api.calls[1][1]["text"])
+        self.assertIn("161 грн", self.api.calls[0][1]["text"])
+        self.assertIn("169 грн", self.api.calls[1][1]["text"])
 
     def test_disabled_or_example_config_blocks_real_send(self):
         for enabled, example in [(False, False), (True, True), (False, True)]:
@@ -238,7 +267,7 @@ class CliTests(unittest.TestCase):
     def test_reads_valid_config_from_secret(self):
         with patch.dict(os.environ, {"BILLING_CONFIG_JSON": json.dumps(raw_config())}):
             config = bot.load_config(from_env=True)
-        self.assertEqual(config["participants"][0]["music_usd"], Decimal("2.00"))
+        self.assertEqual(config["participants"][0]["music_usd"], Fraction(4, 3))
 
     def test_preview_does_not_initialize_telegram(self):
         output = io.StringIO()

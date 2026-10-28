@@ -1,9 +1,9 @@
 name: Payment reminder
 
 on:
-  # Example: 10:17 Warsaw time on the first of each month.
+  # 09:00 Warsaw time on the 28th of each month.
   schedule:
-    - cron: '17 10 1 * *'
+    - cron: '0 9 28 * *'
       timezone: Europe/Warsaw
   workflow_dispatch:
     inputs:

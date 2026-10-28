@@ -11,7 +11,8 @@ import sys
 import urllib.error
 import urllib.request
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -46,7 +47,23 @@ def money(value) -> Decimal:
         raise BotError('Share must be a string from "0.00" to "10000.00" with at most two decimal places') from None
 
 
-def validate_config(raw: dict) -> dict:
+def validate_prices(raw: dict) -> dict[str, tuple[Decimal, int]]:
+    if not isinstance(raw, dict):
+        raise BotError("Subscription prices must be a JSON object")
+    prices = {}
+    for service in ("music", "icloud"):
+        entry = raw.get(service)
+        if not isinstance(entry, dict):
+            raise BotError(f"Missing {service} subscription price")
+        total = money(entry.get("total_usd"))
+        users = entry.get("users")
+        if total <= 0 or type(users) is not int or not 1 <= users <= 6:
+            raise BotError(f"Invalid {service} subscription price or user count")
+        prices[service] = (total, users)
+    return prices
+
+
+def validate_config(raw: dict, prices: dict[str, tuple[Decimal, int]]) -> dict:
     if not isinstance(raw, dict):
         raise BotError("Config must be a JSON object")
     if type(raw.get("example", True)) is not bool:
@@ -76,12 +93,18 @@ def validate_config(raw: dict) -> dict:
             if type(tid) is not int or tid <= 0 or tid in seen_telegram:
                 raise BotError("telegram_id must be a unique positive integer or null")
             seen_telegram.add(tid)
-        music, cloud = money(person.get("music_usd")), money(person.get("icloud_usd"))
-        if music + cloud <= 0:
-            raise BotError("Participant's total share must be greater than zero")
+        has_music = money(person.get("music_usd")) > 0
+        has_cloud = money(person.get("icloud_usd")) > 0
+        if not has_music and not has_cloud:
+            raise BotError("Participant must use at least one subscription")
+        music = Fraction(prices["music"][0]) / prices["music"][1] if has_music else Fraction(0)
+        cloud = Fraction(prices["icloud"][0]) / prices["icloud"][1] if has_cloud else Fraction(0)
         clean.append({"id": pid, "name": name.strip(), "telegram_id": tid,
                       "music_usd": music, "icloud_usd": cloud})
         seen_ids.add(pid)
+    for service, key in (("music", "music_usd"), ("icloud", "icloud_usd")):
+        if sum(bool(person[key]) for person in clean) > prices[service][1]:
+            raise BotError(f"More participants use {service} than its configured user count")
     return {"example": raw.get("example", True), "timezone": zone,
             "payment_note": note, "participants": clean}
 
@@ -97,7 +120,11 @@ def load_config(path: str = "config.json", *, from_env: bool = False) -> dict:
         raw = json.loads(text)
     except (OSError, json.JSONDecodeError):
         raise BotError("Could not read JSON config. Check the file or BILLING_CONFIG_JSON secret") from None
-    return validate_config(raw)
+    try:
+        prices = json.loads(Path("subscription-prices.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise BotError("Could not read subscription-prices.json") from None
+    return validate_config(raw, validate_prices(prices))
 
 
 def parse_rates(payload, day: date) -> tuple[Decimal, Decimal]:
@@ -136,32 +163,31 @@ def fetch_rates(day: date) -> tuple[Decimal, Decimal]:
     return parse_rates(payload, day)
 
 
-def rounded(amount: Decimal) -> str:
-    return str(amount.quantize(CENT, rounding=ROUND_HALF_UP))
+def rounded(amount: Fraction) -> str:
+    return str((2 * amount.numerator + amount.denominator) // (2 * amount.denominator))
 
 
 def render(config: dict, day: date, rates: tuple[Decimal, Decimal], *, test=False, demo=False, plain=False) -> str:
     usd_uah, pln_uah = rates
     esc = str if plain else lambda value: html.escape(str(value))
-    bold = str if plain else lambda value: f"<b>{value}</b>"
-    title = "Apple family subscriptions"
-    lines = [bold(title), f"{day:%m.%Y} · rates for {day:%d.%m.%Y}"]
+    lines = [f"💳 Apple subscriptions · {day:%m.%Y}"]
     if test or demo:
         lines.insert(0, "🧪 TEST — DO NOT PAY")
     if demo:
-        lines.append("Example participants, amounts and rates.")
-    lines.append(f"{'Example rate' if demo else 'NBU rate'}: 1 USD = {usd_uah:.4f} ₴; ≈ {usd_uah / pln_uah:.6f} zł")
+        lines.append("Example amounts and rates.")
     lines.append("")
+    seen = set()
     for person in config["participants"]:
-        name = esc(person["name"])
-        if person["telegram_id"] is not None and not plain:
-            name = f'<a href="tg://user?id={person["telegram_id"]}">{name}</a>'
         music, cloud = person["music_usd"], person["icloud_usd"]
         total = music + cloud
-        plan = " + ".join(label for label, value in [("Music", music), ("iCloud", cloud)] if value)
-        parts = " + ".join(label + " $" + rounded(value) for label, value in [("Music", music), ("iCloud", cloud)] if value)
-        lines.extend([f"{bold(name)} · {plan}", f"{parts} = ${rounded(total)}",
-                      f"{bold(rounded(total * usd_uah) + ' ₴')} or {bold(rounded(total * usd_uah / pln_uah) + ' zł')}", ""])
+        plan = "☁️ + 🎵" if cloud and music else "☁️ iCloud" if cloud else "🎵 Music"
+        uah = rounded(total * Fraction(usd_uah))
+        pln = rounded(total * Fraction(usd_uah) / Fraction(pln_uah))
+        entry = (plan, uah, pln)
+        if entry not in seen:
+            lines.append(f"{plan} — {uah} грн / {pln} zł")
+            seen.add(entry)
+    lines.append("")
     lines.append("Pay in either UAH or PLN.")
     if config["payment_note"]:
         lines.append(esc(config["payment_note"]))
