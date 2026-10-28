@@ -1,0 +1,10 @@
+{
+  "example": true,
+  "timezone": "Europe/Warsaw",
+  "payment_note": "Use the usual payment details.",
+  "participants": [
+    {"id": "anna", "name": "Anna", "telegram_id": null, "music_usd": "2.00", "icloud_usd": "1.00"},
+    {"id": "max", "name": "Max", "telegram_id": null, "music_usd": "2.00", "icloud_usd": "0.00"},
+    {"id": "olya", "name": "Olya", "telegram_id": null, "music_usd": "2.00", "icloud_usd": "0.50"}
+  ]
+}

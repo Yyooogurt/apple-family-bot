@@ -1,0 +1,68 @@
+name: Payment reminder
+
+on:
+  # Example: 10:17 Warsaw time on the first of each month.
+  schedule:
+    - cron: '17 10 1 * *'
+      timezone: Europe/Warsaw
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Start with demo, then chats, preview and test'
+        type: choice
+        required: true
+        default: demo
+        options:
+          - demo
+          - chats
+          - preview
+          - test
+          - send
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-family-reminders
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    # Send only from the main branch.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Run tests before sending
+        run: python -m unittest discover -s tests -v
+      - name: Run selected action
+        env:
+          MODE: ${{ github.event_name == 'schedule' && 'send' || inputs.action }}
+          BILLING_CONFIG_JSON: ${{ secrets.BILLING_CONFIG_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_TEST_CHAT_ID: ${{ secrets.TELEGRAM_TEST_CHAT_ID }}
+          NOTIFICATIONS_ENABLED: ${{ vars.NOTIFICATIONS_ENABLED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            demo) python bot.py demo ;;
+            chats) python bot.py chats ;;
+            preview) python bot.py preview --from-env ;;
+            test) python bot.py send --test --from-env ;;
+            send)
+              if [ "$NOTIFICATIONS_ENABLED" != "true" ]; then
+                echo "Sending is disabled. Test first, then set NOTIFICATIONS_ENABLED=true."
+                exit 0
+              fi
+              python bot.py send --from-env
+              ;;
+            *) echo "Unknown action" >&2; exit 1 ;;
+          esac

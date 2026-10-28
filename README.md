@@ -1,0 +1,71 @@
+# Apple family reminders
+
+A small Telegram reminder for my family's Apple Music and iCloud shares. It converts each person's USD share to UAH and PLN using the National Bank of Ukraine's daily rates. GitHub Actions runs it on a schedule, so no server or database is needed.
+
+The bot sends one message for everyone; it does not track payments. The amounts in the example are fictional.
+
+## Setup
+
+1. Create a bot with [BotFather](https://t.me/BotFather) and add it to your main and test groups. It only needs permission to send messages; it does not need to be an admin or have Privacy Mode disabled.
+2. Put this project in a private GitHub repository with `main` as the default branch. Keep `.github/workflows` at the repository root.
+3. Under **Settings → Secrets and variables → Actions → Secrets**, add `TELEGRAM_BOT_TOKEN` from BotFather.
+4. Send `/setup@your_bot_username` in each group. Within a day, run **Actions → Payment reminder → Run workflow → chats** on `main`. The log shows group IDs, not message contents. To distinguish them, run `chats` after adding the first group, then repeat for the second.
+5. Add the group IDs as `TELEGRAM_CHAT_ID` and `TELEGRAM_TEST_CHAT_ID` secrets.
+6. Copy [config.example.json](config.example.json), replace the fictional participants and amounts, and store the complete JSON in the `BILLING_CONFIG_JSON` secret. Set `"example": false` before production sending. Never commit your token or personal config.
+
+Each `music_usd` and `icloud_usd` value is that person's share, as a string with at most two decimal places. Use `"0.00"` for a service they don't use. Include only people who need reminders. `telegram_id` can be `null`; a numeric ID makes the name a Telegram mention when permitted. `payment_note` is optional.
+
+To discover chat IDs, stop any other handler using the same bot token. If a webhook is configured, disable the existing handler or use a new bot; this script does not remove webhooks.
+
+## Test and enable
+
+In **Actions → Payment reminder → Run workflow**, run these actions on `main`:
+
+- `demo`: offline example with fictional rates; logs only.
+- `preview`: your amounts at today's NBU rates; logs only.
+- `test`: sends a clearly marked test to the test group.
+
+Check the names and both currencies. Test messages can be sent while production sending is disabled.
+
+The example schedule in [.github/workflows/reminders.yml](.github/workflows/reminders.yml) is 10:17 Warsaw time on the first of each month. Change the cron and IANA time zone as needed; also set `timezone` in the config. Choose days 1–28 for a monthly reminder.
+
+After testing, create an Actions **variable** named `NOTIFICATIONS_ENABLED` with value `true`. Scheduled runs and the manual `send` action can then send to the main group. Set it to `false` to pause. Both `"example": false` and `NOTIFICATIONS_ENABLED=true` are required for production sending. Tests run before each scheduled or manual action; a failure stops that run.
+
+GitHub schedules can be delayed or missed, and scheduled workflows may be disabled in inactive public repositories. GitHub Free includes limited Actions minutes for private repositories; check your account's usage and [current limits](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+
+## Rates and retries
+
+```text
+UAH = (Music USD + iCloud USD) × UAH per USD
+PLN = (Music USD + iCloud USD) × UAH per USD / UAH per PLN
+```
+
+The USD/PLN cross-rate uses NBU reference rates, not bank fees or buy/sell rates. Results are rounded to two decimal places at the end. Pay either the UAH or PLN amount, not both.
+
+Each notification fetches rates for the current date in the configured time zone. If the rates are unavailable or have the wrong date, sending stops. If Telegram has a network error, check the group before retrying: the message may already have arrived. There is no automatic retry or persistent send history, so a manual rerun may send a duplicate. Messages remain in Telegram and GitHub keeps workflow logs.
+
+## Local use
+
+Python 3.10+ is required. Windows may also need `py -m pip install tzdata`; use `py` in place of `python3`.
+
+```bash
+python3 bot.py demo
+python3 -m unittest discover -s tests -v
+```
+
+For local settings, copy `config.example.json` to `config.json` and `.env.example` to `.env`. Both personal files are ignored by git.
+
+```bash
+python3 bot.py check
+python3 bot.py preview
+python3 bot.py chats
+python3 bot.py send --test
+```
+
+For a local production send, set `"example": false` and `NOTIFICATIONS_ENABLED=true`, then run `python3 bot.py send`.
+
+## References
+
+- [GitHub Actions schedule syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onschedule)
+- [Telegram bots](https://core.telegram.org/bots/features) and [Bot API](https://core.telegram.org/bots/api)
+- [NBU exchange-rate API](https://bank.gov.ua/admin_uploads/article/Instr_API_KURS_VAL_Full_eng.pdf)
