@@ -38,11 +38,16 @@ def rates(day):
 
 
 class FakeTelegram:
-    def __init__(self):
+    def __init__(self, pinned_message_id=None):
         self.calls = []
+        self.pinned_message_id = pinned_message_id
 
     def call(self, method, **payload):
         self.calls.append((method, payload))
+        if method == "getChat":
+            if self.pinned_message_id is None:
+                return {}
+            return {"pinned_message": {"message_id": self.pinned_message_id}}
         return {"message_id": 7}
 
 
@@ -181,12 +186,37 @@ class DeliveryTests(unittest.TestCase):
     def test_sends_one_message_without_payment_buttons(self):
         result = bot.send_notification(self.config, self.api, -500, enabled=True, rates_provider=rates, today=DAY)
         self.assertEqual(result, 7)
-        self.assertEqual(len(self.api.calls), 1)
         method, payload = self.api.calls[0]
         self.assertEqual(method, "sendMessage")
         self.assertEqual(payload["chat_id"], -500)
         self.assertNotIn("reply_markup", payload)
         self.assertNotIn("confirmed", payload["text"])
+
+    def test_sent_message_is_pinned_with_notification(self):
+        bot.send_notification(self.config, self.api, -500, enabled=True, rates_provider=rates, today=DAY)
+        methods = [call[0] for call in self.api.calls]
+        self.assertEqual(methods, ["sendMessage", "getChat", "pinChatMessage"])
+        pin_payload = self.api.calls[2][1]
+        self.assertEqual(pin_payload["message_id"], 7)
+        self.assertFalse(pin_payload["disable_notification"])
+
+    def test_previously_pinned_reminder_is_unpinned_first(self):
+        api = FakeTelegram(pinned_message_id=3)
+        bot.send_notification(self.config, api, -500, enabled=True, rates_provider=rates, today=DAY)
+        methods = [call[0] for call in api.calls]
+        self.assertEqual(methods, ["sendMessage", "getChat", "unpinChatMessage", "pinChatMessage"])
+        self.assertEqual(api.calls[2][1]["message_id"], 3)
+
+    def test_pin_failure_gives_a_clear_error_after_sending(self):
+        class NoPinRights(FakeTelegram):
+            def call(self, method, **payload):
+                if method == "pinChatMessage":
+                    raise bot.BotError("HTTP 400")
+                return super().call(method, **payload)
+        with self.assertRaises(bot.BotError) as caught:
+            bot.send_notification(self.config, NoPinRights(), -500, enabled=True, rates_provider=rates, today=DAY)
+        self.assertIn("sent but could not be pinned", str(caught.exception))
+        self.assertIn("admin", str(caught.exception))
 
     def test_current_rate_is_requested_again_for_every_notice(self):
         days = []
@@ -197,8 +227,9 @@ class DeliveryTests(unittest.TestCase):
         tomorrow = date(2026, 10, 29)
         bot.send_notification(self.config, self.api, -500, enabled=True, rates_provider=provider, today=tomorrow)
         self.assertEqual(days, [DAY, tomorrow])
-        self.assertIn("161 грн", self.api.calls[0][1]["text"])
-        self.assertIn("169 грн", self.api.calls[1][1]["text"])
+        sent = [payload["text"] for method, payload in self.api.calls if method == "sendMessage"]
+        self.assertIn("161 грн", sent[0])
+        self.assertIn("169 грн", sent[1])
 
     def test_disabled_or_example_config_blocks_real_send(self):
         for enabled, example in [(False, False), (True, True), (False, True)]:

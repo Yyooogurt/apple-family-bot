@@ -6,7 +6,7 @@ The bot sends one message for everyone; it does not track payments. The particip
 
 ## Setup
 
-1. Create a bot with [BotFather](https://t.me/BotFather) and add it to your main and test groups. It only needs permission to send messages; it does not need to be an admin or have Privacy Mode disabled.
+1. Create a bot with [BotFather](https://t.me/BotFather) and add it to your main and test groups. Make it an admin in both groups with the "Pin messages" permission; it does not need any other admin right or Privacy Mode disabled.
 2. Put this project in a private GitHub repository with `main` as the default branch. Keep `.github/workflows` at the repository root.
 3. Under **Settings → Secrets and variables → Actions → Secrets**, add `TELEGRAM_BOT_TOKEN` from BotFather.
 4. Send `/setup@your_bot_username` in each group. Within a day, run **Actions → Payment reminder → Run workflow → chats** on `main`. The log shows group IDs, not message contents. To distinguish them, run `chats` after adding the first group, then repeat for the second.
@@ -17,7 +17,7 @@ Set the total USD price and total number of users for each subscription in [subs
 
 For each participant in the secret config, `music_usd` and `icloud_usd` indicate membership: use `"0.00"` for a service they don't use and `"1.00"` for a service they do use. Existing positive values also indicate membership; their magnitude is not used in the calculation. Include only people who need reminders; the number using a service cannot exceed its configured user count. Names and `telegram_id` remain in the configuration but are not shown or mentioned in the message. `payment_note` is optional.
 
-The message lists each subscription combination once, without names.
+The message lists each subscription combination once, without names. Each sent reminder is pinned with a notification, and the previous reminder is unpinned first. If the bot lacks the "Pin messages" permission, the reminder is still sent, but the run fails with a clear error.
 
 To discover chat IDs, stop any other handler using the same bot token. If a webhook is configured, disable the existing handler or use a new bot; this script does not remove webhooks.
 

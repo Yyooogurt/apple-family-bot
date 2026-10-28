@@ -231,7 +231,18 @@ def send_notification(config: dict, telegram, chat_id: int, *, test=False, enabl
                           parse_mode="HTML", link_preview_options={"is_disabled": True})
     if not isinstance(result, dict) or type(result.get("message_id")) is not int:
         raise BotError("Telegram did not confirm delivery. Check the group before retrying")
-    return result["message_id"]
+    message_id = result["message_id"]
+    try:
+        chat = telegram.call("getChat", chat_id=chat_id)
+        previous = chat.get("pinned_message") if isinstance(chat, dict) else None
+        previous_id = previous.get("message_id") if isinstance(previous, dict) else None
+        if isinstance(previous_id, int) and previous_id != message_id:
+            telegram.call("unpinChatMessage", chat_id=chat_id, message_id=previous_id)
+        telegram.call("pinChatMessage", chat_id=chat_id, message_id=message_id, disable_notification=False)
+    except BotError as exc:
+        raise BotError(f'Reminder sent but could not be pinned ({exc}). Make the bot an admin '
+                       'with "Pin messages" permission') from None
+    return message_id
 
 
 def discover_chats(telegram) -> list[tuple[int, str]]:
